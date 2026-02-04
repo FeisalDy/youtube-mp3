@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  youtube-mp3:
+    build: .
+    image: youtube-mp3-downloader:latest
+    container_name: youtube-mp3-downloader
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - youtube-mp3-data:/data
+    environment:
+      - PYTHONUNBUFFERED=1
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  youtube-mp3-data:
+    driver: local
