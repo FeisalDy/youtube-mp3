@@ -84,7 +84,7 @@ Once the download completes (usually within 30 seconds), the log will show `Succ
 3. The backend downloads and converts in the background—**no blocking**
 4. MP3 files are saved inside the Docker volume at `/data/done/`
 
-### Check Downloads
+### Managing Downloads (Moving/Cutting to Local Storage)
 
 Access files using Docker commands:
 
@@ -97,6 +97,17 @@ docker cp youtube-mp3-downloader:/data/done/<videoId>.mp3 ~/Downloads/
 
 # Copy all files to host
 docker cp youtube-mp3-downloader:/data/done/. ~/Downloads/youtube-mp3/
+```
+
+**How to "Cut" (Move without Re-downloading)**
+The script checks for the existence of the metadata JSON file in the `/data/meta/` directory to prevent duplicate downloads. You can safely cut (copy then delete) the MP3 files from the container to free up space, and the script will *not* re-download them when you play those videos again.
+
+```bash
+# 1. Copy all MP3s to your local machine
+docker cp youtube-mp3-downloader:/data/done/. ~/Downloads/youtube-mp3/
+
+# 2. Delete the copied MP3s from the Docker container to free up space
+docker compose exec youtube-mp3 sh -c 'rm /data/done/*.mp3'
 ```
 
 Files are named by sanitized video title, e.g., `Rick_Astley_Never_Gonna_Give_You_Up.mp3`. Invalid filesystem characters are replaced with underscores.
