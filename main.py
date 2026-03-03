@@ -70,6 +70,7 @@ def download_and_convert(video_id: str, title: str, channel: str):
             "--audio-quality", "192",
             "-o", str(output_path),
             "--write-thumbnail",
+            "--convert-thumbnails", "jpg",
             f"https://www.youtube.com/watch?v={video_id}"
         ]
         
@@ -83,9 +84,9 @@ def download_and_convert(video_id: str, title: str, channel: str):
         
         # Embed metadata using ffmpeg
         # Thumbnail might be saved with full filename or just videoId
-        metadata_path = DONE_DIR / f"{safe_title}_{video_id}.webp"
+        metadata_path = DONE_DIR / f"{safe_title}_{video_id}.jpg"
         if not metadata_path.exists():
-            metadata_path = DONE_DIR / f"{video_id}.webp"
+            metadata_path = DONE_DIR / f"{video_id}.jpg"
         if metadata_path.exists():
             logger.info(f"Embedding thumbnail for {video_id}")
             temp_output = DONE_DIR / f"{safe_title}_{video_id}_temp.mp3"
@@ -100,6 +101,7 @@ def download_and_convert(video_id: str, title: str, channel: str):
                 "-map", "0:0",
                 "-map", "1:0",
                 "-id3v2_version", "3",
+                "-disposition:v:0", "attached_pic",
                 "-y",
                 str(temp_output)
             ]
