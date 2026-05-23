@@ -1,10 +1,15 @@
 FROM python:3.11-slim
 
-# Install system dependencies
+# Install system dependencies including Node.js and deno (JS runtimes for yt-dlp)
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     curl \
+    nodejs \
+    unzip \
     && rm -rf /var/lib/apt/lists/*
+
+# Install deno (yt-dlp's default/preferred JS runtime for signature solving)
+RUN curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh
 
 # Install yt-dlp
 RUN pip install --no-cache-dir yt-dlp

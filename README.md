@@ -13,17 +13,19 @@ A **personal-use** Dockerized service that automatically downloads YouTube video
 
 - **Docker** and **Docker Compose** installed on Linux
 - **Firefox** or **Chrome** with **Tampermonkey** extension
+- A **YouTube account** logged in to your browser (needed for cookie-based authentication)
 
 ## Files
 
-| File                             | Purpose                      |
-| -------------------------------- | ---------------------------- |
-| `main.py`                        | FastAPI backend service      |
-| `requirements.txt`               | Python dependencies          |
-| `Dockerfile`                     | Docker image definition      |
-| `docker compose.yml`             | Docker Compose configuration |
-| `youtube-mp3-downloader.user.js` | Tampermonkey script          |
-| `README.md`                      | This file                    |
+| File                             | Purpose                                                 |
+| -------------------------------- | ------------------------------------------------------- |
+| `main.py`                        | FastAPI backend service                                 |
+| `requirements.txt`               | Python dependencies                                     |
+| `Dockerfile`                     | Docker image definition                                 |
+| `docker-compose.yml`             | Docker Compose configuration                            |
+| `youtube-mp3-downloader.user.js` | Tampermonkey script                                     |
+| `cookies.txt`                    | YouTube session cookies (you generate this — see below) |
+| `README.md`                      | This file                                               |
 
 ## Setup & Installation
 
@@ -34,10 +36,29 @@ git clone <repo-url> ~/youtube-mp3-downloader
 cd ~/youtube-mp3-downloader
 ```
 
-### 2. Build and Start Docker Service
+### 2. Export YouTube Cookies
+
+YouTube requires authentication to serve video streams from server IPs. yt-dlp reads cookies directly from your browser.
+
+Make sure you are **logged in to YouTube** in your browser, then run on the host (not inside Docker):
 
 ```bash
-cd ~/youtube-mp3-downloader
+# Firefox (recommended)
+yt-dlp --cookies-from-browser firefox --cookies cookies.txt --skip-download "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+
+# Or Chrome
+yt-dlp --cookies-from-browser chrome --cookies cookies.txt --skip-download "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+```
+
+This creates `cookies.txt` in the project directory — it's bind-mounted into the container automatically.
+
+> **Note:** `cookies.txt` contains your Google session. It is listed in `.gitignore` and should never be committed to git.
+
+**When to refresh cookies:** If downloads start failing with _"cookies are no longer valid"_ or _"Sign in to confirm you're not a bot"_, simply re-run the command above. No rebuild needed.
+
+### 3. Build and Start Docker Service
+
+```bash
 docker compose up -d --build
 ```
 
@@ -50,10 +71,9 @@ docker logs youtube-mp3-downloader
 
 You should see logs indicating the service is listening on `127.0.0.1:8000`.
 
-### 3. Install Tampermonkey Script
+### 4. Install Tampermonkey Script
 
 1. Install **Tampermonkey** extension for your browser
-
    - [Firefox](https://addons.mozilla.org/en-US/firefox/addon/tampermonkey/)
    - [Chrome](https://chrome.google.com/webstore/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobp55f)
 
@@ -62,7 +82,7 @@ You should see logs indicating the service is listening on `127.0.0.1:8000`.
 4. Save (Ctrl+S)
 5. Enable the script in the Tampermonkey dashboard
 
-### 4. Test
+### 5. Test
 
 1. Open `https://youtube.com` in your browser
 2. Search for and play any video
@@ -75,13 +95,25 @@ You should see logs indicating the service is listening on `127.0.0.1:8000`.
 
 Once the download completes (usually within 30 seconds), the log will show `Successfully downloaded and processed`.
 
+## How YouTube Authentication Works
+
+YouTube bot-detects headless downloaders by IP. The service works around this using three layers:
+
+| Layer                                             | What it does                                                                          |
+| ------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| **Cookies** (`cookies.txt`)                       | Authenticates as your Google account — bypasses bot checks                            |
+| **Player clients** (`web,mweb,tv`)                | Uses multiple YouTube internal clients; if one is blocked, others succeed             |
+| **Deno + EJS** (`--remote-components ejs:github`) | Solves YouTube's JS signature and n-challenge — required to decrypt video stream URLs |
+
+The Docker image includes both **Node.js** and **Deno** as JS runtimes. Deno is yt-dlp's preferred runtime for challenge solving.
+
 ## Usage
 
 ### Normal Operation
 
 1. Browse YouTube as usual
 2. When you play a video, the script automatically sends it to the backend
-3. The backend downloads and converts in the background—**no blocking**
+3. The backend downloads and converts in the background — **no blocking**
 4. MP3 files are saved inside the Docker volume at `/data/done/`
 
 ### Managing Downloads (Moving/Cutting to Local Storage)
@@ -93,14 +125,14 @@ Access files using Docker commands:
 docker compose exec youtube-mp3 ls /data/done/
 
 # Copy a file to host
-docker cp youtube-mp3-downloader:/data/done/<videoId>.mp3 ~/Downloads/
+docker cp youtube-mp3-downloader:/data/done/<filename>.mp3 ~/Downloads/
 
 # Copy all files to host
 docker cp youtube-mp3-downloader:/data/done/. ~/Downloads/youtube-mp3/
 ```
 
 **How to "Cut" (Move without Re-downloading)**
-The script checks for the existence of the metadata JSON file in the `/data/meta/` directory to prevent duplicate downloads. You can safely cut (copy then delete) the MP3 files from the container to free up space, and the script will *not* re-download them when you play those videos again.
+The script checks for the existence of the metadata JSON file in `/data/meta/` to prevent duplicate downloads. You can safely cut (copy then delete) the MP3 files without triggering re-downloads.
 
 ```bash
 # 1. Copy all MP3s to your local machine
@@ -110,25 +142,29 @@ docker cp youtube-mp3-downloader:/data/done/. ~/Downloads/youtube-mp3/
 docker compose exec youtube-mp3 sh -c 'rm /data/done/*.mp3'
 ```
 
-Files are named by sanitized video title, e.g., `Rick_Astley_Never_Gonna_Give_You_Up.mp3`. Invalid filesystem characters are replaced with underscores.
+Files are named by sanitized video title + video ID, e.g., `Rick_Astley_Never_Gonna_Give_You_Up_dQw4w9WgXcQ.mp3`.
+
+### Retry Failed Downloads
+
+Failed downloads are **automatically retried every 24 hours** after service startup. No manual intervention needed.
+
+Each failed video's state is stored as a JSON file in `/data/failed/` with `title`, `channel`, `retry_count`, and `last_error` — so retries use the correct metadata.
+
+If a video is played again in the browser while it's in the failed list, it is **immediately requeued** rather than returning a FAILED status.
+
+To trigger a manual retry of all failed downloads right now:
+
+```bash
+curl -X POST http://127.0.0.1:8000/retry-failed
+```
+
+To clear a specific failed video and retry it immediately, just play it in the browser again.
 
 ### View Metadata
 
 ```bash
-# View metadata JSON
 docker compose exec youtube-mp3 cat /data/meta/<videoId>.json
-
-# Copy metadata to host
-docker cp youtube-mp3-downloader:/data/meta/<videoId>.json ~/Downloads/
 ```
-
-### View Failed Downloads
-
-```bash
-docker compose exec youtube-mp3 ls /data/failed/
-```
-
-If a video ID appears here, the download failed.
 
 ### Backend Statistics
 
@@ -193,23 +229,22 @@ docker compose up -d --build
 Inside the Docker container:
 
 ```
+/app/
+├── main.py
+└── cookies.txt          ← bind-mounted from host project directory
+
 /data/
 ├── done/
-│   ├── Rick_Astley_Never_Gonna_Give_You_Up.mp3
-│   ├── Some_Other_Video_Title.mp3
+│   ├── Rick_Astley_Never_Gonna_Give_You_Up_dQw4w9WgXcQ.mp3
 │   └── ...
 ├── meta/
 │   ├── dQw4w9WgXcQ.json
-│   ├── anotherVideoId.json
 │   └── ...
 └── failed/
-    ├── VIDEO_ID_BAD
-    └── ...
+    └── <videoId>        ← empty marker file; delete to retry
 ```
 
-This directory is backed by a Docker named volume (`youtube-mp3-data`). Files are **not** directly accessible via the host filesystem. Use `docker cp` or `docker compose exec` to access files.
-
-**Note**: MP3 files are named using sanitized video titles for readability. Metadata files use video IDs to track which videos have been downloaded and prevent duplicates.
+`/data` is backed by a Docker named volume (`youtube-mp3-data`). Use `docker cp` or `docker compose exec` to access files from the host.
 
 ## API Endpoints
 
@@ -229,16 +264,10 @@ Send video metadata when a video is played.
 
 **Responses:**
 
-- **READY**: `{"status": "READY", "videoId": "..."}`MP3 already exists in `/data/done/`
-- **PROCESSING**: `{"status": "PROCESSING", "videoId": "..."}`Download queued or in progress
-- **FAILED**: `{"status": "FAILED", "videoId": "..."}`
-  Previous attempt failed; marked in `/data/failed/`
+- **READY**: MP3 already exists — `{"status": "READY", "videoId": "..."}`
+- **PROCESSING**: Download queued (including immediate requeue of previously failed videos) — `{"status": "PROCESSING", "videoId": "..."}`
 
 ### GET /health
-
-Health check endpoint.
-
-**Response:**
 
 ```json
 { "status": "ok" }
@@ -246,14 +275,18 @@ Health check endpoint.
 
 ### GET /stats
 
-Download statistics.
-
-**Response:**
-
 ```json
 {
   "downloaded": 10,
   "failed": 2,
+  "failed_details": [
+    {
+      "videoId": "LEZoOCsKdYQ",
+      "title": "Energy - Ceui",
+      "retry_count": 3,
+      "last_failed_at": "2026-03-04T05:00:00"
+    }
+  ],
   "data_dir": "/data"
 }
 ```
@@ -272,41 +305,39 @@ If not enabled:
 sudo systemctl enable docker
 ```
 
-## Known Limitations & Assumptions
-
-1. **YouTube Compatibility**: yt-dlp depends on YouTube's API and UI. If YouTube significantly changes, this may break. Keep yt-dlp updated.
-2. **Video ID Uniqueness**: The system assumes `videoId` is unique and permanent. It is.
-3. **No Authentication**: The backend is open to any caller on localhost. This is intentional for a personal service. Do **not** expose port 8000 to the internet.
-4. **Concurrency**: Limited to 2 concurrent downloads via `ThreadPoolExecutor`. Increase `max_workers` in `main.py` if needed.
-5. **Metadata Extraction**: The Tampermonkey script attempts to extract channel name and title from the page DOM. If YouTube changes its structure, the script may need updates. Browser console will log what it extracted.
-6. **Thumbnail Embedding**: ffmpeg attempts to embed the thumbnail as cover art. If this fails, the file is still created with basic ID3 metadata.
-7. **Storage**: No cleanup happens. Downloaded files persist in the Docker volume indefinitely. To free space, either delete specific files using `docker compose exec youtube-mp3 rm "/data/done/<title>.mp3"` or remove the entire volume with `docker compose down -v`.
-8. **No Database**: Filesystem replaces database. Scaling to multiple machines would require a real database.
-9. **Browser Availability**: The script only works while you have a browser open. It does **not** download from external sources or scheduled tasks.
-10. **URL Parsing**: The Tampermonkey script only detects classic YouTube watch URLs (`youtube.com?v=...`). YouTube Shorts and embedded players may not trigger.
-
 ## Troubleshooting
+
+### "Sign in to confirm you're not a bot" / "cookies are no longer valid"
+
+Your `cookies.txt` has expired or been rotated by YouTube. Refresh it:
+
+```bash
+yt-dlp --cookies-from-browser firefox --cookies cookies.txt --skip-download "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+```
+
+No rebuild needed — the file is bind-mounted. Then clear any failed markers and retrigger by playing the video again:
+
+```bash
+docker exec youtube-mp3-downloader sh -c 'rm -f /data/failed/*'
+```
+
+### "Signature solving failed" / "n challenge solving failed"
+
+Deno may have failed to download the EJS challenge solver script (requires internet access from the container). Check:
+
+```bash
+docker exec youtube-mp3-downloader deno --version
+docker logs youtube-mp3-downloader
+```
 
 ### Docker Service Won't Start
 
-1. Check Docker daemon:
-
-   ```bash
-   systemctl status docker
-   sudo systemctl start docker
-   ```
-
-2. Check for port conflicts:
-
-   ```bash
-   netstat -tlnp | grep 8000
-   ```
-
-3. View container logs:
-
-   ```bash
-   docker logs youtube-mp3-downloader
-   ```
+```bash
+systemctl status docker
+sudo systemctl start docker
+netstat -tlnp | grep 8000   # check for port conflicts
+docker logs youtube-mp3-downloader
+```
 
 ### Script Not Detecting Videos
 
@@ -315,54 +346,43 @@ sudo systemctl enable docker
 3. Try reloading the page (`Ctrl+R`)
 4. Check that the script matches `@match https://www.youtube.com/*`
 
-### Downloads Failing
+### Downloads Failing (General)
 
-1. Check container logs:
+```bash
+# Check logs
+docker logs youtube-mp3-downloader
 
-   ```bash
-   docker logs youtube-mp3-downloader
-   ```
-
-2. Verify yt-dlp is installed and working:
-
-   ```bash
-   docker compose exec youtube-mp3 yt-dlp --version
-   ```
-
-3. Test with a specific URL:
-
-   ```bash
-   docker compose exec youtube-mp3 yt-dlp --extract-audio --audio-format mp3 "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
-   ```
+# Test yt-dlp manually inside container
+docker exec youtube-mp3-downloader yt-dlp --cookies /app/cookies.txt \
+  --extractor-args "youtube:player_client=web,mweb,tv" \
+  --remote-components ejs:github \
+  --skip-download "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+```
 
 ### Disk Space Issues
-
-Check Docker volume usage:
 
 ```bash
 docker system df -v
 ```
 
-Look for the `youtube-mp3-downloader_youtube-mp3-data` volume in the output. Downloaded files can be several MB each. Plan storage accordingly.
+Look for the `youtube-mp3-downloader_youtube-mp3-data` volume. A 10-minute 192 kbps MP3 is roughly 14 MB.
+
+## Known Limitations
+
+1. **YouTube Compatibility**: yt-dlp depends on YouTube's API. Keep yt-dlp updated if things break.
+2. **Cookie Expiry**: YouTube rotates cookies periodically. Re-export when downloads start failing.
+3. **No Authentication**: Backend is open to any localhost caller. Do **not** expose port 8000 to the internet.
+4. **Concurrency**: Limited to 2 concurrent downloads. Increase `max_workers` in `main.py` if needed.
+5. **Shorts / Embeds**: The Tampermonkey script only detects classic `youtube.com/watch?v=...` URLs.
+6. **Storage**: No automatic cleanup. Files persist in the Docker volume indefinitely.
+7. **Browser Required**: The script only runs while your browser is open.
 
 ## Security Notes
 
-- **Localhost only**: Bound to `127.0.0.1:8000` by default
-- **No auth**: Acceptable for local use only
+- **Localhost only**: Bound to `127.0.0.1:8000` — not reachable from the network
 - **Do not expose**: Never port-forward port 8000 to the internet
-- **Trusted browser**: Tampermonkey scripts can access all visited sites; only run scripts you trust
-
-## Performance Notes
-
-- Typical download/convert time: 20–60 seconds depending on video length
-- yt-dlp and ffmpeg are CPU-intensive; expect high CPU usage during conversion
-- Network bandwidth: Depends on video bitrate (typically 50–500 kB/s)
-- Storage: A 10-minute 128 kbps MP3 is roughly 10 MB
+- **cookies.txt**: Contains your Google session cookie — keep it private, never commit to git
 
 ## License
 
-This is a personal tool. Use at your own discretion and respect copyright laws in your jurisdiction.
-
-## Contributing / Feedback
-
-Improvements welcome! Feel free to submit issues or PRs.
+Personal tool. Use at your own discretion and respect copyright laws in your jurisdiction.
