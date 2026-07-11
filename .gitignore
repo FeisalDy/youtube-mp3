@@ -1,1 +1,6 @@
 cookies.txt
+
+venv/
+.venv/
+env/
+.env/
